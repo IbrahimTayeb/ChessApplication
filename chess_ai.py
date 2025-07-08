@@ -1,8 +1,9 @@
 """
-Simple chess AI implementation
+Enhanced chess AI implementation with Alpha-Beta pruning and advanced evaluation
 """
 
 import random
+import time
 from chess_pieces import Pawn, Rook, Knight, Bishop, Queen, King
 
 class ChessAI:
@@ -95,24 +96,47 @@ class ChessAI:
         return score
         
     def _get_minimax_move(self, board, possible_moves):
-        """Get move using minimax algorithm (simplified)"""
+        """Get move using minimax algorithm with alpha-beta pruning"""
         best_move = None
         best_score = float('-inf')
         
-        for move in possible_moves:
-            from_pos, to_pos = move
-            score = self._minimax(board, from_pos, to_pos, depth=2, maximizing=True)
+        # Use iterative deepening for better time management
+        max_depth = 4 if self.difficulty == 'hard' else 3
+        start_time = time.time()
+        time_limit = 5.0  # 5 seconds max thinking time
+        
+        for depth in range(1, max_depth + 1):
+            if time.time() - start_time > time_limit:
+                break
+                
+            current_best = None
+            alpha = float('-inf')
+            beta = float('inf')
             
-            if score > best_score:
-                best_score = score
-                best_move = move
+            for move in possible_moves:
+                if time.time() - start_time > time_limit:
+                    break
+                    
+                from_pos, to_pos = move
+                score = self._alpha_beta(board, from_pos, to_pos, depth, alpha, beta, True)
+                
+                if score > best_score:
+                    best_score = score
+                    current_best = move
+                
+                alpha = max(alpha, score)
+                if beta <= alpha:
+                    break  # Beta cutoff
+            
+            if current_best:
+                best_move = current_best
                 
         return best_move if best_move else random.choice(possible_moves)
         
-    def _minimax(self, board, from_pos, to_pos, depth, maximizing):
-        """Simplified minimax implementation"""
+    def _alpha_beta(self, board, from_pos, to_pos, depth, alpha, beta, maximizing):
+        """Alpha-beta pruning implementation"""
         if depth == 0:
-            return self._evaluate_position(board)
+            return self._evaluate_position_advanced(board)
             
         # Make temporary move
         from_row, from_col = from_pos
@@ -127,16 +151,29 @@ class ChessAI:
         
         if maximizing:
             max_eval = float('-inf')
-            opponent_moves = board.get_all_possible_moves('white' if self.color == 'black' else 'black')
-            for opponent_move in opponent_moves[:5]:  # Limit search for performance
-                eval_score = self._minimax(board, opponent_move[0], opponent_move[1], depth-1, False)
+            opponent_color = 'white' if self.color == 'black' else 'black'
+            opponent_moves = board.get_all_possible_moves(opponent_color)
+            
+            # Sort moves by potential (captures first)
+            opponent_moves = self._order_moves(board, opponent_moves)
+            
+            for opponent_move in opponent_moves:
+                eval_score = self._alpha_beta(board, opponent_move[0], opponent_move[1], depth-1, alpha, beta, False)
                 max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # Beta cutoff
         else:
             min_eval = float('inf')
             my_moves = board.get_all_possible_moves(self.color)
-            for my_move in my_moves[:5]:  # Limit search for performance
-                eval_score = self._minimax(board, my_move[0], my_move[1], depth-1, True)
+            my_moves = self._order_moves(board, my_moves)
+            
+            for my_move in my_moves:
+                eval_score = self._alpha_beta(board, my_move[0], my_move[1], depth-1, alpha, beta, True)
                 min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # Alpha cutoff
             max_eval = min_eval
             
         # Restore board state
@@ -145,6 +182,21 @@ class ChessAI:
         piece.row, piece.col = original_pos
         
         return max_eval
+    
+    def _order_moves(self, board, moves):
+        """Order moves for better alpha-beta pruning (captures first)"""
+        capture_moves = []
+        quiet_moves = []
+        
+        for move in moves:
+            from_pos, to_pos = move
+            to_row, to_col = to_pos
+            if board.board[to_row][to_col] is not None:
+                capture_moves.append(move)
+            else:
+                quiet_moves.append(move)
+        
+        return capture_moves + quiet_moves
         
     def _evaluate_position(self, board):
         """Evaluate the current board position"""
@@ -161,6 +213,84 @@ class ChessAI:
                         score -= piece_value
                         
         return score
+    
+    def _evaluate_position_advanced(self, board):
+        """Advanced position evaluation with multiple factors"""
+        score = 0
+        
+        # Material count
+        for row in range(8):
+            for col in range(8):
+                piece = board.board[row][col]
+                if piece:
+                    piece_value = self.piece_values[piece.piece_type]
+                    
+                    # Position-specific bonuses
+                    position_bonus = self._get_position_bonus(piece, row, col)
+                    total_value = piece_value + position_bonus
+                    
+                    if piece.color == self.color:
+                        score += total_value
+                    else:
+                        score -= total_value
+        
+        # King safety
+        score += self._evaluate_king_safety(board, self.color) * 2
+        score -= self._evaluate_king_safety(board, 'white' if self.color == 'black' else 'black') * 2
+        
+        # Mobility (number of legal moves)
+        my_moves = len(board.get_all_possible_moves(self.color))
+        opponent_moves = len(board.get_all_possible_moves('white' if self.color == 'black' else 'black'))
+        score += (my_moves - opponent_moves) * 0.1
+        
+        return score
+    
+    def _get_position_bonus(self, piece, row, col):
+        """Get positional bonus for piece placement"""
+        center_distance = abs(3.5 - row) + abs(3.5 - col)
+        
+        if piece.piece_type == 'pawn':
+            # Pawn advancement bonus
+            if piece.color == 'white':
+                return (7 - row) * 0.1
+            else:
+                return row * 0.1
+        elif piece.piece_type == 'knight':
+            # Knights prefer center
+            return (4 - center_distance) * 0.1
+        elif piece.piece_type == 'bishop':
+            # Bishops prefer long diagonals
+            return (7 - center_distance) * 0.05
+        elif piece.piece_type == 'king':
+            # King safety in early game, activity in endgame
+            return -center_distance * 0.1
+        
+        return 0
+    
+    def _evaluate_king_safety(self, board, color):
+        """Evaluate king safety"""
+        king_pos = board.find_king(color)
+        if not king_pos:
+            return -100  # King is missing (shouldn't happen)
+        
+        king_row, king_col = king_pos
+        safety_score = 0
+        
+        # Check for pawn shield
+        if color == 'white' and king_row == 7:
+            for col_offset in [-1, 0, 1]:
+                shield_col = king_col + col_offset
+                if 0 <= shield_col < 8:
+                    if board.board[6][shield_col] and board.board[6][shield_col].piece_type == 'pawn' and board.board[6][shield_col].color == 'white':
+                        safety_score += 1
+        elif color == 'black' and king_row == 0:
+            for col_offset in [-1, 0, 1]:
+                shield_col = king_col + col_offset
+                if 0 <= shield_col < 8:
+                    if board.board[1][shield_col] and board.board[1][shield_col].piece_type == 'pawn' and board.board[1][shield_col].color == 'black':
+                        safety_score += 1
+        
+        return safety_score
         
     def set_difficulty(self, difficulty):
         """Set AI difficulty level"""
